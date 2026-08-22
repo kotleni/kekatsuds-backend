@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""HTTP backend that hosts Nintendo DS ROMs from ROMS_DIR.
+"""HTTP backend that hosts ROMs for multiple consoles from ROMS_DIR.
 
 Endpoints:
-    GET  /roms            - ROM list in TSV format (see example.txt)
-    GET  /roms/<filename> - download a ROM file
-    GET  /roms/icon.png   - shared ROM icon image
-    HEAD                  - supported on all of the above
+    GET  /roms                       - ROM list in TSV format (see example.txt)
+    GET  /roms/<system>/<filename>   - download a ROM file
+    GET  /roms/icon.png              - shared ROM icon image
+    HEAD                             - supported on all of the above
 
 Files are streamed chunk by chunk with an accurate Content-Length header
 so clients like Kekatsu-DS can display live download progress.
@@ -20,13 +20,18 @@ HOST = "0.0.0.0"
 PORT = 8888
 
 ROMS_DIR = "roms"
-ROM_EXTENSIONS = (".nds", ".zip")
+
+# Console configuration: system ID -> (subfolder under ROMS_DIR, ROM extensions)
+CONSOLES = {
+    "gba": ("gba", (".gba", ".zip")),
+    "nds": ("nds", (".nds", ".zip")),
+    "dsi": ("dsi", (".dsi", ".nds", ".zip")),
+}
 
 ICON_PATH = "banner.png"
 
 DB_VERSION = "1"
 DB_HEADER_LINE = "\t"
-SYSTEM = "nds"
 REGION = "ANY"
 STUB = "todo"
 
@@ -43,21 +48,34 @@ class RomEntry:
     title: str
     filename: str
     size: int
+    system: str
+
+
+def ensure_rom_dirs():
+    os.makedirs(ROMS_DIR, exist_ok=True)
+    for system, (folder, _) in CONSOLES.items():
+        console_dir = os.path.join(ROMS_DIR, folder)
+        if not os.path.isdir(console_dir):
+            os.makedirs(console_dir)
+            print(f"Created folder for '{system}': {console_dir}", flush=True)
 
 
 def scan_roms():
     entries = []
-    for name in sorted(os.listdir(ROMS_DIR)):
-        path = os.path.join(ROMS_DIR, name)
-        if not os.path.isfile(path):
-            continue
-        if not name.lower().endswith(ROM_EXTENSIONS):
-            continue
-        entries.append(RomEntry(
-            title=os.path.splitext(name)[0],
-            filename=name,
-            size=os.path.getsize(path),
-        ))
+    for system, (folder, extensions) in CONSOLES.items():
+        console_dir = os.path.join(ROMS_DIR, folder)
+        for name in sorted(os.listdir(console_dir)):
+            path = os.path.join(console_dir, name)
+            if not os.path.isfile(path):
+                continue
+            if not name.lower().endswith(extensions):
+                continue
+            entries.append(RomEntry(
+                title=os.path.splitext(name)[0],
+                filename=name,
+                size=os.path.getsize(path),
+                system=system,
+            ))
     return entries
 
 
@@ -65,10 +83,10 @@ def build_rom_list(base_url):
     icon_url = f"{base_url}{ICON_ENDPOINT}"
     lines = [DB_VERSION, DB_HEADER_LINE]
     for rom in ROMS:
-        download_url = f"{base_url}{DOWNLOAD_PREFIX}{quote(rom.filename)}"
+        download_url = f"{base_url}{DOWNLOAD_PREFIX}{quote(rom.system)}/{quote(rom.filename)}"
         fields = [
             rom.title,
-            SYSTEM,
+            rom.system,
             REGION,
             STUB,
             STUB,
@@ -146,14 +164,16 @@ class RomRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path.startswith(DOWNLOAD_PREFIX) and len(path) > len(DOWNLOAD_PREFIX):
-            name = path[len(DOWNLOAD_PREFIX):]
-            if "/" in name or "\\" in name or "\x00" in name:
-                self._send_error(400, "Bad Request")
-                return
-            fs_path = os.path.join(ROMS_DIR, name)
-            if os.path.isfile(fs_path):
-                self._send_fs_file(fs_path, "application/octet-stream", name)
-                return
+            rest = path[len(DOWNLOAD_PREFIX):]
+            parts = rest.split("/", 1)
+            if len(parts) == 2:
+                system, name = parts
+                if (system in CONSOLES and name
+                        and "/" not in name and "\\" not in name and "\x00" not in name):
+                    fs_path = os.path.join(ROMS_DIR, CONSOLES[system][0], name)
+                    if os.path.isfile(fs_path):
+                        self._send_fs_file(fs_path, "application/octet-stream", name)
+                        return
 
         self._send_error(404, "Not Found")
 
@@ -169,13 +189,16 @@ class RomRequestHandler(BaseHTTPRequestHandler):
 
 def main():
     global ROMS
-    if not os.path.isdir(ROMS_DIR):
-        raise SystemExit(f"ROMs directory not found: {ROMS_DIR}")
     if not os.path.isfile(ICON_PATH):
         raise SystemExit(f"Icon file not found: {ICON_PATH}")
 
+    ensure_rom_dirs()
     ROMS = scan_roms()
-    print(f"Found {len(ROMS)} ROM(s) in '{ROMS_DIR}'", flush=True)
+    counts = {}
+    for rom in ROMS:
+        counts[rom.system] = counts.get(rom.system, 0) + 1
+    summary = ", ".join(f"{system}: {count}" for system, count in sorted(counts.items()))
+    print(f"Found {len(ROMS)} ROM(s) ({summary or 'none'})", flush=True)
 
     server = ThreadingHTTPServer((HOST, PORT), RomRequestHandler)
     print(f"Serving on http://{HOST}:{PORT}{ROMS_ENDPOINT}", flush=True)
