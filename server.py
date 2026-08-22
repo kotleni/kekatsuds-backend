@@ -20,7 +20,7 @@ HOST = "0.0.0.0"
 PORT = 8888
 
 ROMS_DIR = "roms"
-ROM_EXTENSIONS = (".nds",)
+ROM_EXTENSIONS = (".nds", ".zip")
 
 ICON_PATH = "banner.png"
 
@@ -35,7 +35,7 @@ DOWNLOAD_PREFIX = "/roms/"
 ICON_ENDPOINT = "/roms/icon.png"
 
 SERVER_NAME = "kekatsu-backend"
-CHUNK_SIZE = 64 * 1024
+CHUNK_SIZE = 512 * 1024
 
 
 @dataclass
